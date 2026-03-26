@@ -16,7 +16,7 @@ For each pixel (or spatial "spaxel") defined in the 3D model:
 
 ### Populating the Cube (The Spectral Profile)
 
-Once $v_{LOS}$, $\sigma$, and $f$ are determined for each spatial voxel $(x, y, z)$, `dysmalpy` populates the 3D data cube with a Gaussian spectral profile for each spatial point. This is highly optimized using Cython in `dysmalpy/models/cutils.pyx`. 
+Once $v_{LOS}$, $\sigma$, and $f$ are determined for each spatial voxel $(x, y, z)$, `dysmalpy` populates the 3D data cube with a Gaussian spectral profile for each spatial point. This is highly optimized using Cython in `dysmalpy/models/cutils.pyx`.
 
 For a given spectral velocity array $v_{spec}$, the flux density $F$ at a specific channel $s$, and spatial pixel $(x,y)$, is populated as:
 
@@ -108,9 +108,75 @@ elif extrac_type == 'moment':
     disp = self.model_cube.data.linewidth_sigma().to(u.km/u.s).value
 ```
 
-## 3. Dynamical Parametrization of Intrinsic Velocity ($v$) and Dispersion ($\sigma$)
+## 3. Configuring Mass Models (Stellar, Gas, Dark Matter)
 
-As shown in Section 1, the 3D model cube requires an intrinsic rotation velocity $v_{rot}(r)$ and intrinsic velocity dispersion $\sigma(r)$ at every point. In `dysmalpy`, these properties are not arbitrary but are tied dynamically to the underlying mass model parameters (e.g., Sersic index, effective radius, total mass).
+In `dysmalpy`, the total mass model is an aggregate of several `MassModel` components combined within a `ModelSet`. These components explicitly define the enclosed mass profile $M_{enc}(r)$, which determines the kinematics. The user configures these models to represent the stellar, gas, and dark matter content.
+
+### A. Baryonic Mass (Stellar & Gas)
+
+Baryonic mass is usually modeled using a **Sersic** or an **Exponential Disk** profile. The `Sersic` profile defines the surface mass density $\Sigma(r)$ as:
+
+$$ \Sigma(r) = \Sigma_e \exp \left\{ -b_n \left[ \left( \frac{r}{r_{\mathrm{eff}}} \right)^{1/n} - 1 \right] \right\} $$
+
+Where:
+*   $r_{\mathrm{eff}}$ is the effective (half-mass) radius.
+*   $n$ is the Sersic index (where $n=1$ corresponds to an exponential disk, typical for gas or stellar disks, and $n=4$ corresponds to a de Vaucouleurs profile typical for bulges).
+*   $b_n$ is a constant determined numerically such that $r_{\mathrm{eff}}$ contains half the total mass.
+
+The 2D projected enclosed mass for a Sersic profile is calculated as an incomplete Gamma function:
+
+$$ M_{enc}(r) = M_{total} \cdot \frac{\gamma\left(2n, b_n (r/r_{\mathrm{eff}})^{1/n}\right)}{\Gamma(2n)} $$
+
+**Configuration Example:**
+```python
+from dysmalpy.models import Sersic, DiskBulge
+
+# Add a combined stellar disk and bulge
+stellar_comp = DiskBulge(total_mass=10.5, r_eff_disk=3.0, n_disk=1.0,
+                         r_eff_bulge=1.0, n_bulge=4.0, bt=0.3) # bt = bulge-to-total ratio
+
+# Alternatively, add a gas disk component
+gas_comp = Sersic(total_mass=9.5, r_eff=4.0, n=1.0, baryon_type='gas')
+```
+*Note:* `dysmalpy` uses lookup tables derived from *Noordermeer (2008)* to compute the 3D potential for geometrically "thick" Sersic disks, avoiding the infinite-cylinder approximation.
+
+### B. Dark Matter Halo
+
+Dark matter halos can be modeled using several profiles, most commonly the **NFW (Navarro, Frenk, & White)** profile or the **Burkert** (cored) profile.
+
+**1. NFW Profile:**
+The density profile $\rho(r)$ is given by:
+
+$$ \rho(r) = \frac{\rho_0}{(r/r_s)(1 + r/r_s)^2} $$
+
+Where:
+*   $r_s = r_{\mathrm{vir}}/c$ is the scale radius ($r_{\mathrm{vir}}$ is the virial radius, $c$ is the concentration).
+*   $\rho_0$ is the normalization density tied to the total virial mass $M_{\mathrm{vir}}$.
+
+The spherically enclosed dark matter mass $M_{enc, \mathrm{DM}}(r)$ is:
+
+$$ M_{enc, \mathrm{DM}}(r) = 4\pi \rho_0 r_s^3 \left[ \ln\left(1 + \frac{r}{r_s}\right) - \frac{r}{r+r_s} \right] $$
+
+**2. Burkert Profile:**
+A cored profile, often favored in some dark matter dominated galaxies:
+
+$$ \rho(r) = \frac{\rho_0}{(1 + r/r_B)(1 + (r/r_B)^2)} $$
+
+Where $r_B$ is the core radius.
+
+**Configuration Example:**
+```python
+from dysmalpy.models import NFW
+
+# Add an NFW Dark Matter Halo
+halo = NFW(mvirial=12.0, conc=10.0) # log(M_vir) = 12.0 M_sun, c = 10
+```
+
+---
+
+## 4. Dynamical Parametrization of Intrinsic Velocity ($v$) and Dispersion ($\sigma$)
+
+With the mass models configured, the 3D model cube requires an intrinsic rotation velocity $v_{rot}(r)$ and intrinsic velocity dispersion $\sigma(r)$ at every point. These properties are derived dynamically from the `ModelSet`.
 
 ### A. Intrinsic Dispersion ($\sigma$)
 
@@ -122,7 +188,7 @@ This $\sigma_0$ is a free parameter in the model (e.g., `DispersionConst.sigma0`
 
 ### B. Circular Velocity ($v_{circ}$)
 
-First, the total *circular* velocity $v_{circ}(r)$ is computed from the gravitational potential of all mass components (baryonic disk, bulge, dark matter halo, etc.). 
+First, the total *circular* velocity $v_{circ}(r)$ is computed from the gravitational potential of all mass components (baryonic disk, bulge, dark matter halo, etc.).
 
 For each component $i$, the circular velocity squared $v_{circ, i}^2(r)$ is derived from the enclosed mass $M_{enc, i}(r)$:
 $$ v_{circ, i}^2(r) = \frac{G M_{enc, i}(r)}{r} $$
@@ -175,7 +241,7 @@ v_rot = np.sqrt(v_circ_sq - vel_asymm_drift_sq)
 
 ## Summary for `GalfitS` Integration
 
-Because `dysmalpy` explicitly generates the full 3D model cube, computing the moment maps is straightforward. 
+Because `dysmalpy` explicitly generates the full 3D model cube, computing the moment maps is straightforward.
 
 If integrating into `GalfitS`:
 1.  **Build the 3D model:** Integrate over the line of sight ($z$) for each sky pixel $(x, y)$ to produce a velocity spectrum (adding up the flux contributions mapped to their respective line-of-sight velocities and intrinsic dispersions).
